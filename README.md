@@ -89,7 +89,7 @@ CHROMA_PERSIST_DIR=/path/to/repo/.chroma
 **Optional — index a codebase for RAG:**
 
 ```bash
-python scripts/index_repo.py
+python scripts/index_repo.py /path/to/your/target/repo
 ```
 
 This chunks and embeds the target repo into a local Chroma vector store. The generator will use semantic search to find relevant code before writing diffs.

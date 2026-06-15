@@ -12,6 +12,7 @@ dependencies = [
     "sse-starlette>=2.1.0",
     "pydantic>=2.9.0",
     "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -31,7 +32,7 @@ rag = ["chromadb>=0.5.0"]
 # github = ["PyGithub>=2.4.0"]
 
 # Phase 5: MCP server exposure
-mcp = ["fastmcp>=2.0", "httpx>=0.27.0"]
+mcp = ["fastmcp>=2.0"]
 
 [build-system]
 requires = ["setuptools>=68"]

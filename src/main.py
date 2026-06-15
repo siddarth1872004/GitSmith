@@ -68,6 +68,7 @@ def _serialize_state(values: dict) -> dict:
         "diff": values.get("current_diff"),
         "plan": values["plan"].model_dump() if values.get("plan") else None,
         "review": values["review_feedback"].model_dump() if values.get("review_feedback") else None,
+        "generated_tests": values.get("generated_tests"),
         "test_result": values["test_result"].model_dump() if values.get("test_result") else None,
         "review_iterations": values.get("iteration_count", 0),
         "debug_iterations": values.get("debug_count", 0),
@@ -216,6 +217,7 @@ async def list_runs() -> dict:
                 "duration_seconds": t.duration_seconds,
                 "total_input_tokens": t.total_input_tokens,
                 "total_output_tokens": t.total_output_tokens,
+                "total_cost_usd": round(t.total_cost_usd, 6),
                 "pr_url": t.pr_url,
             }
             for t in sorted(traces, key=lambda x: x.started_at, reverse=True)
