@@ -57,8 +57,8 @@ Override the model with `LLM_MODEL=<model-id>`.
 **Prerequisites:** Python 3.11+, Docker (for sandbox test execution), Git
 
 ```bash
-git clone https://github.com/siddarth1872004/agentforge
-cd agentforge
+git clone https://github.com/siddarth1872004/GitSmith
+cd GitSmith
 
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
