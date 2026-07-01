@@ -2,16 +2,20 @@
 Sandbox runner: applies a unified diff to the base files, writes generated tests,
 then executes both inside an ephemeral Docker container.
 
-Security constraints applied to every container:
+Security constraints applied to every test-execution container:
   --network none     no outbound network access
   --memory 256m      capped RAM
   --cpus 0.5         capped CPU
   --read-only        immutable container filesystem (writable /tmp via tmpfs)
   --rm               auto-removed on exit
+
+Test dependencies (pytest, fastapi, httpx) cannot be installed inside that
+container — there is no network access and the filesystem is read-only — so
+they are baked once into a local image (`_SANDBOX_IMAGE`) via `docker build`,
+which is the only step allowed network access. Every actual test run reuses
+that cached image fully offline.
 """
 
-import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -20,13 +24,15 @@ from src.agents.tools import BASE_FILES
 from src.state import AgentMessage, AgentState, TestResult
 from src.utils.compress import strip_ansi, strip_pytest_noise
 
-# Packages pre-installed in the sandbox. Phase 3: derive from the target repo's
-# requirements.txt or pyproject.toml instead of hardcoding.
+# Packages pre-installed in the sandbox image. Phase 3: derive from the target
+# repo's requirements.txt or pyproject.toml instead of hardcoding.
 _SANDBOX_PACKAGES = "pytest fastapi httpx"
 
-_DOCKER_IMAGE = "python:3.12-slim"
+_BASE_IMAGE = "python:3.12-slim"
+_SANDBOX_IMAGE = "mac-sandbox:latest"
 
 _MAX_RUNTIME_SECONDS = 60
+_IMAGE_BUILD_TIMEOUT_SECONDS = 300
 
 
 def _write_base_files(tmp: Path, base_files: dict[str, str]) -> None:
@@ -36,10 +42,31 @@ def _write_base_files(tmp: Path, base_files: dict[str, str]) -> None:
         dest.write_text(content)
 
 
+def _has_unsafe_path(diff: str) -> bool:
+    """
+    Reject diffs whose file headers could make `patch -p1` write outside `tmp`
+    (e.g. via `../` segments or absolute paths in `--- a/...` / `+++ b/...`).
+    """
+    for line in diff.splitlines():
+        if line.startswith(("--- ", "+++ ")):
+            target = line[4:].split("\t")[0].strip()
+            if target in ("/dev/null",):
+                continue
+            # Strip the a/ or b/ prefix that `-p1` expects, if present.
+            parts = target.split("/", 1)
+            rel = parts[1] if len(parts) == 2 and parts[0] in ("a", "b") else target
+            if rel.startswith("/") or ".." in Path(rel).parts:
+                return True
+    return False
+
+
 def _apply_diff(tmp: Path, diff: str) -> tuple[bool, str]:
     """Run `patch -p1` in tmp. Returns (success, stderr)."""
     if not diff or diff.startswith("(generator"):
         return False, "No diff to apply."
+
+    if _has_unsafe_path(diff):
+        return False, "Refused: diff references a path outside the sandbox directory."
 
     diff_file = tmp / "_patch.diff"
     diff_file.write_text(diff)
@@ -54,9 +81,54 @@ def _apply_diff(tmp: Path, diff: str) -> tuple[bool, str]:
     return result.returncode == 0, result.stderr
 
 
+def _image_exists(image: str) -> bool:
+    result = subprocess.run(
+        ["docker", "image", "inspect", image],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def _ensure_sandbox_image() -> str | None:
+    """
+    Build the cached sandbox image (network required) if it doesn't exist yet.
+    Returns an error message on failure, or None on success.
+    """
+    if _image_exists(_SANDBOX_IMAGE):
+        return None
+
+    dockerfile = f"FROM {_BASE_IMAGE}\nRUN pip install --no-cache-dir {_SANDBOX_PACKAGES}\n"
+    try:
+        # Build with an empty context (`-`) since the Dockerfile needs no local
+        # files — this avoids sending the caller's CWD to the Docker daemon.
+        with tempfile.TemporaryDirectory(prefix="mac_build_ctx_") as empty_ctx:
+            proc = subprocess.run(
+                ["docker", "build", "-t", _SANDBOX_IMAGE, "-f", "-", empty_ctx],
+                input=dockerfile,
+                capture_output=True,
+                text=True,
+                timeout=_IMAGE_BUILD_TIMEOUT_SECONDS,
+            )
+        if proc.returncode != 0:
+            return strip_ansi(proc.stderr)[-800:]
+        return None
+    except subprocess.TimeoutExpired:
+        return f"Sandbox image build timed out after {_IMAGE_BUILD_TIMEOUT_SECONDS}s."
+    except FileNotFoundError:
+        return (
+            "Docker not found. Install Docker Desktop (or docker-ce) "
+            "and ensure the daemon is running."
+        )
+
+
 def _run_docker(tmp: Path, test_code: str) -> TestResult:
     test_file = tmp / "test_generated.py"
     test_file.write_text(test_code)
+
+    build_err = _ensure_sandbox_image()
+    if build_err:
+        return TestResult(exit_code=1, stdout="", stderr=f"Sandbox image build failed: {build_err}")
 
     cmd = [
         "docker", "run", "--rm",
@@ -67,9 +139,9 @@ def _run_docker(tmp: Path, test_code: str) -> TestResult:
         "--tmpfs", "/tmp",
         "-v", f"{tmp}:/workspace:ro",
         "-w", "/workspace",
-        _DOCKER_IMAGE,
+        _SANDBOX_IMAGE,
         "sh", "-c",
-        f"pip install {_SANDBOX_PACKAGES} -q 2>&1 && pytest test_generated.py -v 2>&1",
+        "pytest test_generated.py -v 2>&1",
     ]
 
     try:

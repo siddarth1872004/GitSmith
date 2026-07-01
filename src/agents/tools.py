@@ -88,7 +88,12 @@ def _compress_file(content: str, path: str) -> str:
 def read_file(path: str) -> str:
     repo_path = os.environ.get("TARGET_REPO_PATH")
     if repo_path:
-        full = Path(repo_path) / path
+        repo_root = Path(repo_path).resolve()
+        full = (repo_root / path).resolve()
+        try:
+            full.relative_to(repo_root)
+        except ValueError:
+            return f"# {path}: outside of {repo_path} (refused)"
         if not full.is_file():
             return f"# {path}: not found in {repo_path}"
 
